@@ -56,20 +56,26 @@
 #define ADDR_MX_TORQUE_ENABLE           24                  // Control table address is different in Dynamixel model
 #define ADDR_MX_GOAL_POSITION           30
 #define ADDR_MX_PRESENT_POSITION        36
+#define ADDR_MX_CURRENT_CONSUMING		68
+#define AADR_MX_GOAL_TORQUE				71
+#define ADDR_MX_PRESENT_LOAD 			40
+
+
+
 
 // Protocol version
 #define PROTOCOL_VERSION                1.0                 // See which protocol version is used in the Dynamixel
 
 // Default setting
-#define DXL_ID                          1                   // Dynamixel ID: 1
-#define BAUDRATE                        57600
+#define DXL_ID                          2                   // Dynamixel ID: 1
+#define BAUDRATE                        1000000
 #define DEVICENAME                      "/dev/ttyUSB0"      // Check which port is being used on your controller
                                                             // ex) Windows: "COM1"   Linux: "/dev/ttyUSB0" Mac: "/dev/tty.usbserial-*"
 
 #define TORQUE_ENABLE                   1                   // Value for enabling the torque
 #define TORQUE_DISABLE                  0                   // Value for disabling the torque
-#define DXL_MINIMUM_POSITION_VALUE      100                 // Dynamixel will rotate between this value
-#define DXL_MAXIMUM_POSITION_VALUE      4000                // and this value (note that the Dynamixel would not move when the position value is out of movable range. Check e-manual about the range of the Dynamixel you use.)
+#define DXL_MINIMUM_POSITION_VALUE      900               // Dynamixel will rotate between this value
+#define DXL_MAXIMUM_POSITION_VALUE      3000              // and this value (note that the Dynamixel would not move when the position value is out of movable range. Check e-manual about the range of the Dynamixel you use.)
 #define DXL_MOVING_STATUS_THRESHOLD     10                  // Dynamixel moving status threshold
 
 #define ESC_ASCII_VALUE                 0x1b
@@ -122,6 +128,8 @@ int kbhit(void)
 #endif
 }
 
+#include <cmath> 
+
 int main()
 {
   // Initialize PortHandler instance
@@ -134,13 +142,19 @@ int main()
   // Get methods and members of Protocol1PacketHandler or Protocol2PacketHandler
   dynamixel::PacketHandler *packetHandler = dynamixel::PacketHandler::getPacketHandler(PROTOCOL_VERSION);
 
-  int index = 0;
   int dxl_comm_result = COMM_TX_FAIL;             // Communication result
-  int dxl_goal_position[2] = {DXL_MINIMUM_POSITION_VALUE, DXL_MAXIMUM_POSITION_VALUE};         // Goal position
+  uint16_t dxl_goal_position = 0;         // Goal position
 
   uint8_t dxl_error = 0;                          // Dynamixel error
   uint16_t dxl_present_position = 0;              // Present position
-
+  uint16_t dxl_current_consuming = 0;
+  //uint16_t dxl_goal_torque = 2045;
+  uint16_t dxl_present_load = 0;
+  
+  
+  int delta_postion = 0;
+  volatile double change_in_current_previous = 0;
+  
   // Open port
   if (portHandler->openPort())
   {
@@ -182,50 +196,220 @@ int main()
     printf("Dynamixel has been successfully connected \n");
   }
 
-  while(1)
-  {
-    printf("Press any key to continue! (or press ESC to quit!)\n");
-    if (getch() == ESC_ASCII_VALUE)
-      break;
 
-    // Write goal position
-    dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position[index], &dxl_error);
-    if (dxl_comm_result != COMM_SUCCESS)
-    {
-      printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
-    }
-    else if (dxl_error != 0)
-    {
-      printf("%s\n", packetHandler->getRxPacketError(dxl_error));
-    }
+ while(1)
+  { 
+	  
+   // Read consuming current
+   dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_CURRENT_CONSUMING, &dxl_current_consuming, &dxl_error);
+   if (dxl_comm_result != COMM_SUCCESS)
+   {
+		printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+   }
+   else if (dxl_error != 0)
+   {
+        printf("error in reading consuming current %s\n", packetHandler->getRxPacketError(dxl_error));
+   }
+   
+   // Read present position
+   dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_PRESENT_POSITION, &dxl_present_position, &dxl_error);
+   if (dxl_comm_result != COMM_SUCCESS)
+   {
+      printf("error in reading  %s\n", packetHandler->getTxRxResult(dxl_comm_result));
+   }
+   else if (dxl_error != 0)
+   {
+      printf("error in reading present position %s\n", packetHandler->getRxPacketError(dxl_error));
+   }
+	
+	
+   // Read present load
+   dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_PRESENT_LOAD, &dxl_present_load, &dxl_error);
+   if (dxl_comm_result != COMM_SUCCESS)
+   {
+      printf("error in reading  %s\n", packetHandler->getTxRxResult(dxl_comm_result));
+   }
+   else if (dxl_error != 0)
+   {
+      printf("error in reading present position %s\n", packetHandler->getRxPacketError(dxl_error));
+   }
+	
+   double change_in_current_present = (dxl_current_consuming - 2048);
 
-    do
-    {
-      // Read present position
-      dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_PRESENT_POSITION, &dxl_present_position, &dxl_error);
-      if (dxl_comm_result != COMM_SUCCESS)
-      {
-        printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
-      }
-      else if (dxl_error != 0)
-      {
-        printf("%s\n", packetHandler->getRxPacketError(dxl_error));
-      }
+	//algorithm for defining delta position 
+	
+	/*
+	// Write goal torque
+	dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, AADR_MX_GOAL_TORQUE, dxl_goal_torque, &dxl_error);
+	if (dxl_comm_result != COMM_SUCCESS)
+	{
+	printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+	}	
+	else if (dxl_error != 0)
+	{
+	printf("error in writing goal torue %s\n", packetHandler->getRxPacketError(dxl_error));
+	}	
+	
+	*/
+	
+	
+	
+	
+	
+	
+	if(change_in_current_present > 2 && change_in_current_previous >= 0)
+		{
+			delta_postion = -1.0*change_in_current_present; 
+			//delta_postion = -10.0;		//towards 285
+			dxl_goal_position = dxl_present_position  + delta_postion;
+			// Read present position
+			dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_PRESENT_POSITION, &dxl_present_position, &dxl_error);
+			if (dxl_comm_result != COMM_SUCCESS)
+			{
+			printf("error in reading  %s\n", packetHandler->getTxRxResult(dxl_comm_result));
+			}
+			else if (dxl_error != 0)
+			{
+			printf("error in reading present position %s\n", packetHandler->getRxPacketError(dxl_error));
+			}
+			
+			if(dxl_present_position > dxl_goal_position)
+			{
+				// Write goal position
+				//dxl_goal_position = dxl_present_position  + delta_postion;
+				dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position, &dxl_error);
+				if (dxl_comm_result != COMM_SUCCESS)
+				{
+				printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+				}	
+				else if (dxl_error != 0)
+				{
+				printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+				}
+			}
+			
+			else if (dxl_present_position <= dxl_goal_position)
+			{
+				// Write goal position
+				dxl_goal_position = dxl_present_position;
+				dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position, &dxl_error);
+				if (dxl_comm_result != COMM_SUCCESS)
+				{
+				printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+				}
+				else if (dxl_error != 0)
+				{
+				printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+				}
+			}
+		}
+	else if(change_in_current_present < -2 && change_in_current_previous <= 0)
+		{
+			delta_postion = -1.0*change_in_current_present; 
+			//delta_postion = 10.0;  //towards 3810
+			dxl_goal_position = dxl_present_position  + delta_postion;
+			
+			// Read present position
+			dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL_ID, ADDR_MX_PRESENT_POSITION, &dxl_present_position, &dxl_error);
+			if (dxl_comm_result != COMM_SUCCESS)
+			{
+			printf("error in reading  %s\n", packetHandler->getTxRxResult(dxl_comm_result));
+			}
+			else if (dxl_error != 0)
+			{
+			printf("error in reading present position %s\n", packetHandler->getRxPacketError(dxl_error));
+			}
+			
+			if(dxl_present_position < dxl_goal_position)
+			{
+				// Write goal position
+				//dxl_goal_position = dxl_present_position  + delta_postion;
+				dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position, &dxl_error);
+				if (dxl_comm_result != COMM_SUCCESS)
+				{
+				printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+				}	
+				else if (dxl_error != 0)
+				{
+				printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+				}
+			}
+			
+			else if (dxl_present_position >= dxl_goal_position)
+			{
+				// Write goal position
+				dxl_goal_position = dxl_present_position;
+				dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position, &dxl_error);
+				if (dxl_comm_result != COMM_SUCCESS)
+				{
+				printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+				}
+				else if (dxl_error != 0)
+				{
+				printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+				}
+			}
+		}
+	else
+		{
+			delta_postion = 0;
+		}
+	//delta_postion = position_coeff*(change_in_current);
+	//delta_postion = 0;
+	
+	change_in_current_previous =  change_in_current_present;
+	
 
-      printf("[ID:%03d] GoalPos:%03d  PresPos:%03d\n", DXL_ID, dxl_goal_position[index], dxl_present_position);
+	
+	printf("\n Current Consuming :%03d, change_in_current_present :%lf, deltaposition:%d, PresPos:%03d, GoalPos:%03d PresLoad:%03d \n", dxl_current_consuming, change_in_current_present, delta_postion, dxl_present_position, dxl_goal_position, dxl_present_load);
+	
+	
 
-    }while((abs(dxl_goal_position[index] - dxl_present_position) > DXL_MOVING_STATUS_THRESHOLD));
-
-    // Change goal position
-    if (index == 0)
-    {
-      index = 1;
-    }
-    else
-    {
-      index = 0;
-    }
-  }
+	
+}
+	
+	
+	
+	
+	
+	
+	
+/*
+	else if(dxl_goal_position <= 285)
+	{
+		// Write goal position
+		dxl_goal_position = 285;
+		dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, 285, &dxl_error);
+		if (dxl_comm_result != COMM_SUCCESS)
+		{
+		printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+		}
+		else if (dxl_error != 0)
+		{
+		printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+		}
+		dxl_current_consuming_past = dxl_current_consuming;
+	}
+	else if(dxl_goal_position>=3810)
+	{
+		// Write goal position
+		dxl_goal_position = 3810;
+		dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL_ID, ADDR_MX_GOAL_POSITION, 3810, &dxl_error);
+		if (dxl_comm_result != COMM_SUCCESS)
+		{
+		printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+		}
+		else if (dxl_error != 0)
+		{
+		printf("error in writing goal position %s\n", packetHandler->getRxPacketError(dxl_error));
+		}
+	
+	}
+*/
+	
+	
+	
+ 
 
   // Disable Dynamixel Torque
   dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, DXL_ID, ADDR_MX_TORQUE_ENABLE, TORQUE_DISABLE, &dxl_error);
@@ -243,3 +427,4 @@ int main()
 
   return 0;
 }
+

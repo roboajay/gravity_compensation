@@ -31,14 +31,13 @@
 /* Author: Ryu Woon Jung (Leon) */
 
 //
-// *********     Sync Write Example      *********
+// *********     Bulk Read Example      *********
 //
 //
-// Available Dynamixel model on this example : All models using Protocol 1.0
+// Available Dynamixel model on this example : MX or X series set to Protocol 1.0
 // This example is tested with two Dynamixel MX-28, and an USB2DYNAMIXEL
 // Be sure that Dynamixel MX properties are already set as %% ID : 1 / Baudnum : 34 (Baudrate : 57600)
 //
-
 #if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <termios.h>
@@ -56,10 +55,12 @@
 #define ADDR_MX_TORQUE_ENABLE           24                  // Control table address is different in Dynamixel model
 #define ADDR_MX_GOAL_POSITION           30
 #define ADDR_MX_PRESENT_POSITION        36
+#define ADDR_MX_MOVING                  46
 
 // Data Byte Length
 #define LEN_MX_GOAL_POSITION            2
 #define LEN_MX_PRESENT_POSITION         2
+#define LEN_MX_MOVING                   1
 
 // Protocol version
 #define PROTOCOL_VERSION                1.0                 // See which protocol version is used in the Dynamixel
@@ -74,7 +75,7 @@
 #define TORQUE_ENABLE                   1                   // Value for enabling the torque
 #define TORQUE_DISABLE                  0                   // Value for disabling the torque
 #define DXL_MINIMUM_POSITION_VALUE      900                 // Dynamixel will rotate between this value
-#define DXL_MAXIMUM_POSITION_VALUE      3000               // and this value (note that the Dynamixel would not move when the position value is out of movable range. Check e-manual about the range of the Dynamixel you use.)
+#define DXL_MAXIMUM_POSITION_VALUE      3000                // and this value (note that the Dynamixel would not move when the position value is out of movable range. Check e-manual about the range of the Dynamixel you use.)
 #define DXL_MOVING_STATUS_THRESHOLD     10                  // Dynamixel moving status threshold
 
 #define ESC_ASCII_VALUE                 0x1b
@@ -139,17 +140,18 @@ int main()
   // Get methods and members of Protocol1PacketHandler or Protocol2PacketHandler
   dynamixel::PacketHandler *packetHandler = dynamixel::PacketHandler::getPacketHandler(PROTOCOL_VERSION);
 
-  // Initialize GroupSyncWrite instance
-  dynamixel::GroupSyncWrite groupSyncWrite(portHandler, packetHandler, ADDR_MX_GOAL_POSITION, LEN_MX_GOAL_POSITION);
+  // Initialize GroupBulkRead instance
+  dynamixel::GroupBulkRead groupBulkRead(portHandler, packetHandler);
 
   int index = 0;
   int dxl_comm_result = COMM_TX_FAIL;             // Communication result
   bool dxl_addparam_result = false;               // addParam result
+  bool dxl_getdata_result = false;                // GetParam result
   int dxl_goal_position[2] = {DXL_MINIMUM_POSITION_VALUE, DXL_MAXIMUM_POSITION_VALUE};  // Goal position
 
   uint8_t dxl_error = 0;                          // Dynamixel error
-  uint8_t param_goal_position[2];
-  uint16_t dxl1_present_position = 0, dxl2_present_position = 0;                        // Present position
+  uint16_t dxl1_present_position = 0;             // Present position
+  uint8_t dxl2_moving = 0;                        // Dynamixel moving status
 
   // Open port
   if (portHandler->openPort())
@@ -207,66 +209,79 @@ int main()
     printf("Dynamixel#%d has been successfully connected \n", DXL2_ID);
   }
 
+  // Add parameter storage for Dynamixel#1 present position value
+  dxl_addparam_result = groupBulkRead.addParam(DXL1_ID, ADDR_MX_PRESENT_POSITION, LEN_MX_PRESENT_POSITION);
+  if (dxl_addparam_result != true)
+  {
+    fprintf(stderr, "[ID:%03d] grouBulkRead addparam failed", DXL1_ID);
+    return 0;
+  }
+
+  // Add parameter storage for Dynamixel#2 present moving value
+  dxl_addparam_result = groupBulkRead.addParam(DXL2_ID, ADDR_MX_MOVING, LEN_MX_MOVING);
+  if (dxl_addparam_result != true)
+  {
+    fprintf(stderr, "[ID:%03d] grouBulkRead addparam failed", DXL2_ID);
+    return 0;
+  }
+
   while(1)
   {
     printf("Press any key to continue! (or press ESC to quit!)\n");
     if (getch() == ESC_ASCII_VALUE)
       break;
 
-    // Allocate goal position value into byte array
-    param_goal_position[0] = DXL_LOBYTE(dxl_goal_position[index]);
-    param_goal_position[1] = DXL_HIBYTE(dxl_goal_position[index]);
-
-    // Add Dynamixel#1 goal position value to the Syncwrite storage
-    dxl_addparam_result = groupSyncWrite.addParam(DXL1_ID, param_goal_position);
-    if (dxl_addparam_result != true)
+    // Write Dynamixel#1 goal position
+    dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL1_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position[index], &dxl_error);
+    if (dxl_comm_result != COMM_SUCCESS)
     {
-      fprintf(stderr, "[ID:%03d] groupSyncWrite addparam failed", DXL1_ID);
-      return 0;
+      printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+    }
+    else if (dxl_error != 0)
+    {
+      printf("%s\n", packetHandler->getRxPacketError(dxl_error));
     }
 
-    // Add Dynamixel#2 goal position value to the Syncwrite parameter storage
-    dxl_addparam_result = groupSyncWrite.addParam(DXL2_ID, param_goal_position);
-    if (dxl_addparam_result != true)
+    // Write Dynamixel#2 goal position
+    dxl_comm_result = packetHandler->write2ByteTxRx(portHandler, DXL2_ID, ADDR_MX_GOAL_POSITION, dxl_goal_position[index], &dxl_error);
+    if (dxl_comm_result != COMM_SUCCESS)
     {
-      fprintf(stderr, "[ID:%03d] groupSyncWrite addparam failed", DXL2_ID);
-      return 0;
+      printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
     }
-
-    // Syncwrite goal position
-    dxl_comm_result = groupSyncWrite.txPacket();
-    if (dxl_comm_result != COMM_SUCCESS) printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
-
-    // Clear syncwrite parameter storage
-    groupSyncWrite.clearParam();
+    else if (dxl_error != 0)
+    {
+      printf("%s\n", packetHandler->getRxPacketError(dxl_error));
+    }
 
     do
     {
-      // Read Dynamixel#1 present position
-      dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL1_ID, ADDR_MX_PRESENT_POSITION, &dxl1_present_position, &dxl_error);
-      if (dxl_comm_result != COMM_SUCCESS)
+      // Bulkread present position and moving status
+      dxl_comm_result = groupBulkRead.txRxPacket();
+      if (dxl_comm_result != COMM_SUCCESS) printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
+
+      dxl_getdata_result = groupBulkRead.isAvailable(DXL1_ID, ADDR_MX_PRESENT_POSITION, LEN_MX_PRESENT_POSITION);
+      if (dxl_getdata_result != true)
       {
-        printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
-      }
-      else if (dxl_error != 0)
-      {
-        printf("%s\n", packetHandler->getRxPacketError(dxl_error));
+        fprintf(stderr, "[ID:%03d] groupBulkRead getdata failed", DXL1_ID);
+        return 0;
       }
 
-      // Read Dynamixel#2 present position
-      dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, DXL2_ID, ADDR_MX_PRESENT_POSITION, &dxl2_present_position, &dxl_error);
-      if (dxl_comm_result != COMM_SUCCESS)
+      dxl_getdata_result = groupBulkRead.isAvailable(DXL2_ID, ADDR_MX_MOVING, LEN_MX_MOVING);
+      if (dxl_getdata_result != true)
       {
-        printf("%s\n", packetHandler->getTxRxResult(dxl_comm_result));
-      }
-      else if (dxl_error != 0)
-      {
-        printf("%s\n", packetHandler->getRxPacketError(dxl_error));
+        fprintf(stderr, "[ID:%03d] groupBulkRead getdata failed", DXL2_ID);
+        return 0;
       }
 
-      printf("[ID:%03d] GoalPos:%03d  PresPos:%03d\t[ID:%03d] GoalPos:%03d  PresPos:%03d\n", DXL1_ID, dxl_goal_position[index], dxl1_present_position, DXL2_ID, dxl_goal_position[index], dxl2_present_position);
+      // Get Dynamixel#1 present position value
+      dxl1_present_position = groupBulkRead.getData(DXL1_ID, ADDR_MX_PRESENT_POSITION, LEN_MX_PRESENT_POSITION);
 
-    }while((abs(dxl_goal_position[index] - dxl1_present_position) > DXL_MOVING_STATUS_THRESHOLD) || (abs(dxl_goal_position[index] - dxl2_present_position) > DXL_MOVING_STATUS_THRESHOLD));
+      // Get Dynamixel#2 moving status value
+      dxl2_moving = groupBulkRead.getData(DXL2_ID, ADDR_MX_MOVING, LEN_MX_MOVING);
+
+      printf("[ID:%03d] Present Position : %d \t [ID:%03d] Is Moving : %d\n", DXL1_ID, dxl1_present_position, DXL2_ID, dxl2_moving);
+
+    }while(abs(dxl_goal_position[index] - dxl1_present_position) > DXL_MOVING_STATUS_THRESHOLD);
 
     // Change goal position
     if (index == 0)
